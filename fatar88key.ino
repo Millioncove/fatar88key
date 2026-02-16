@@ -25,7 +25,8 @@ const int PIN_SI = 12;
 const int PIN_SC = 13; // Builtin LED?
 const int PIN_RC = 14;
 
-const int matrix[16][16] = {
+// Odd major index is initial partial press, evens are full press.
+const uint8_t matrix[16][16] = {
     {39, 38, 37, 36, 35, 34, 33, 32, 79, 78, 77, 76, 75, 74, 73, 72},
     {39, 38, 37, 36, 35, 34, 33, 32, 79, 78, 77, 76, 75, 74, 73, 72},
     {0, 0, 0, 0, 0, 0, 0, 0, 87, 86, 85, 84, 83, 82, 81, 80},
@@ -44,7 +45,10 @@ const int matrix[16][16] = {
     {31, 30, 29, 28, 27, 26, 25, 24, 71, 70, 69, 68, 67, 66, 65, 64}
 };
 
-//int ticked[16][16] = { 0 };
+// 0 means it is released
+uint32_t micros_at_partial[88] = { 0 };
+
+uint8_t in_flight_velocities[88] = { 0 };
 
 // Writes the given word to the output register (blue)
 // 1 = LOW, 0 = HIGH
@@ -114,41 +118,53 @@ void setup() {
 }
 
 void loop() {
-  // play notes from F#-0 (0x1E) to F#-5 (0x5A):
-  /*
-  for (int note = 0x1E; note < 0x5A; note++) {
-    //digitalWrite(PIN_SC, HIGH);
-    usbMIDI.sendNoteOn(70, 95, 1);
-    delay(1000);
-    //digitalWrite(PIN_SC, LOW);
-    usbMIDI.sendNoteOff(70, 0, 1);
-    delay(1000);
-  }
-  */
-  
   for (int i = 0; i < 16; i++) {
     writeOutputs(~(1 << i));
-    int readInp = readInputs();
-    int bitIndex = indexOfFirstOnBitIn(readInp);
-    if (readInp) {
-      //ticked[i][bitIndex] = 1;
-      //Serial.print(i);
-      //Serial.print(" : ");
-      //Serial.println(bitIndex);
-      //Serial.print(" | \t");
-      Serial.println(matrix[i][bitIndex]);
+    int all_bits_in_chunk = readInputs();
+    for (int b = 0; b < 16; b++) {
+      uint8_t key = matrix[i][b] + 9;
+      bool is_bit_set = (all_bits_in_chunk & (1 << b)) != 0;
+      bool is_bottom_scan = i % 2 == 0;
+      bool is_partial_scan = i % 2 == 1;
+
+      if (is_partial_scan) {
+        if (is_bit_set) {
+          // This key is partially pressed
+          if (micros_at_partial[key] == 0) {
+            // Store micros at first instant partial press is discovered
+            // For travel time (force) calculation
+            micros_at_partial[key] = micros();
+          }
+        } else {
+          // This is a key that is not even partially pressed...
+          if (in_flight_velocities[key] != 0) {
+            // But it is still ringing! Silence it!
+            in_flight_velocities[key] = 0;
+            usbMIDI.sendNoteOff(key, 0, 0);
+          }
+          continue; // Go to next bit no matter how you paste this around...
+        }
+      }
+
+      // This if-statement can never be entered on the same scan as the partial scan.
+      if (is_bottom_scan) {
+        if (is_bit_set) {
+          // This key is fully pressed...
+          if (in_flight_velocities[key] == 0) {
+            // But it has not made any sound yet! Make some noise
+            usbMIDI.sendNoteOn(key, 100, 0); // TODO: Actually calculate velocities
+            in_flight_velocities[key] = 100;
+            Serial.println(key);
+          }
+        } else {
+          // This key is not fully pressed
+          // Nothing to do in particular in this case...
+        }
+      }
     }
   }
   
   while (usbMIDI.read()) {
     // ignore incoming MIDI messages from the computer
   }
-}
-
-// plays a MIDI note. Doesn't check to see that cmd is greater than 127, or that
-// data values are less than 127:
-void noteOn(int cmd, int pitch, int velocity) {
-  Serial.write(cmd);
-  Serial.write(pitch);
-  Serial.write(velocity);
 }
